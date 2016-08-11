@@ -233,6 +233,61 @@
             }).call({}, "arg1", {}, done);
         },
 
+        "async promise-based test restores the sandbox when the promise is fulfilled": function (done) {
+            var method = function () {};
+            var object = { method: method };
+            var spy = sinon.spy();
+            sinon.test(function (callback) {
+                var stub;
+                var sandbox = this;
+                return Promise.resolve()
+                    .then(function () {
+                        stub = sandbox.stub(object, "method", spy);
+                    })
+                    .then(function () {
+                        stub();
+                    })
+                    .then(callback);
+            }).call({}, function () {
+                assert.equals(spy.called, true);
+                assert.equals(object.method, method);
+                done();
+            });
+        },
+
+        "async promise-based test restores the sandbox when the promise is rejected": function (done) {
+            var method = function () {};
+            var object = { method: method };
+            sinon.test(function (callback) {
+                var sandbox = this;
+                return Promise.resolve()
+                    .then(function () {
+                        sandbox.stub(object, "method");
+                    })
+                    .then(function () {
+                        return Promise.reject(new Error("dummy"));
+                    })
+                    .catch(callback);
+            }).call({}, function () {
+                assert.equals(object.method, method);
+                done();
+            });
+        },
+
+        "async promise-based test re-throws the error if the promise is rejected": function (done) {
+            var spy = sinon.spy();
+            sinon.test(function (callback) {
+                return Promise.reject(new Error("dummy"))
+                    .catch(function () {
+                        spy();
+                        callback();
+                    });
+            }).call({}, function () {
+                assert.equals(spy.called, true);
+                done();
+            });
+        },
+
         "verifies mocks": function () {
             var method = function () {};
             var object = { method: method };
