@@ -276,14 +276,16 @@
 
         "async promise-based test re-throws the error if the promise is rejected": function (done) {
             var spy = sinon.spy();
+            var error = new Error("dummy");
             sinon.test(function (callback) {
-                return Promise.reject(new Error("dummy"))
-                    .catch(function () {
+                return Promise.reject(error)
+                    .catch(function (thrownError) {
                         spy();
-                        callback();
+                        callback(thrownError);
                     });
-            }).call({}, function () {
+            }).call({}, function (thrownError) {
                 assert.equals(spy.called, true);
+                assert.equals(thrownError, error);
                 done();
             });
         },
