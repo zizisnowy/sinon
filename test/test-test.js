@@ -7,6 +7,35 @@
     var assert = buster.assert;
     var refute = buster.refute;
 
+    // promise-like structure
+    function stubPromise() {
+        var thenStub = sinon.stub();
+        var promise = {
+            then: thenStub,
+            index: 0,
+            resolve: function (object) {
+                var callback = thenStub.getCall(this.index++).args[0];
+                if (object) {
+                    callback(object);
+                } else {
+                    callback();
+                }
+            },
+            reject: function (error) {
+                var callback = thenStub.getCall(this.index++).args[1];
+                if (error) {
+                    callback(error);
+                } else {
+                    callback();
+                }
+            }
+        };
+
+        thenStub.returns(promise);
+
+        return promise;
+    }
+
     buster.testCase("sinon.test", {
         setUp: function () {
             this.boundTestCase = function () {
@@ -137,7 +166,7 @@
 
         "passes on errors to callbacks": function () {
 
-            var fn = sinon.test(function (callback) {
+            var test = sinon.test(function (callback) {
                 callback(new Error("myerror"));
             });
 
@@ -146,7 +175,7 @@
                 assert.equals(err instanceof Error, true);
             }
 
-            fn(errorChecker);
+            test(errorChecker);
             assert.equals(errorChecker.called, true);
         },
 
@@ -233,64 +262,189 @@
             }).call({}, "arg1", {}, done);
         },
 
-        "async promise-based test": {
+        "async tests should not allow promises to be returned": function () {
+            var promise = stubPromise();
+            var test = sinon.test(function (callback) {
+                callback();
+
+                return promise;
+            });
+
+            assert.exception(test, {
+                message: /callback .* promise.* both/
+            });
+        },
+
+        "sync tests with thenable return value": {
+            setUp: function () {
+                var method = this.method = function () {};
+                var object = this.object = {method: method};
+                var promise = this.promise = stubPromise();
+
+                this.test = sinon.test(function () {
+                    this.stub(object, "method");
+
+                    return promise;
+                });
+            },
+
+            tearDown: function () {
+                // ensure sandbox is restored
+                if (this.promise.index < this.promise.then.callCount) {
+                    this.promise.resolve();
+                }
+            },
+
+            "should listen to returned promise": function (done) {
+                var self = this;
+                var promise = self.test.call({});
+
+                assert(promise.then.calledOnce);
+                assert(promise.then.getCall(0).args.length, 2);
+                assert.isFunction(promise.then.getCall(0).args[0]);
+                assert.isFunction(promise.then.getCall(0).args[1]);
+
+                // allow any other actions to take place
+                nextTick(function () {
+                    refute.same(self.object.method, self.method, "should wait to restore stubs");
+
+                    done();
+                });
+            },
+
+            "restores sandbox after promise is fulfilled": function () {
+                var promise = this.test.call({});
+
+                promise.resolve();
+
+                assert.same(this.object.method, this.method);
+            },
+
+            "restores sandbox after promise is rejected": function () {
+                var promise = this.test.call({});
+                var error = new Error("expected");
+
+                assert.exception(
+                    function () {
+                        promise.reject(error);
+                    },
+                    {message: "expected"},
+                    "should re-throw error from rejected promise"
+                );
+
+                assert.same(this.object.method, this.method);
+            },
+
+            "ensures test rejects with a non-falsy value": function () {
+                var promise = this.test.call({});
+
+                assert.exception(
+                    function () {
+                        promise.reject(false);
+                    },
+                    {message: /rejected.*falsy/}
+                );
+
+                assert.same(this.object.method, this.method);
+            }
+        },
+
+        "sync tests with A+ promise returned": {
             requiresSupportFor: {
                 Promise: typeof Promise !== "undefined"
             },
 
+            setUp: function () {
+                this.method = function () {};
+                this.object = {method: this.method};
+            },
+
             "restores the sandbox when the promise is fulfilled": function (done) {
-                var method = function () {};
-                var object = { method: method };
-                var spy = sinon.spy();
-                sinon.test(function (callback) {
-                    var stub;
+                var self = this;
+                var expected = {};
+                var test = sinon.test(function () {
                     var sandbox = this;
-                    return Promise.resolve()
-                        .then(function () {
-                            stub = sandbox.stub(object, "method", spy);
-                        })
-                        .then(function () {
-                            stub();
-                        })
-                        .then(callback);
-                }).call({}, function () {
-                    assert.equals(spy.called, true);
-                    assert.equals(object.method, method);
+
+                    return new Promise(function (resolve) {
+                        sandbox.stub(self.object, "method");
+
+                        resolve(expected);
+                    });
+                });
+
+                test.call({}).then(function (thing) {
+                    assert.equals(self.object.method, self.method);
+                    assert.same(thing, expected);
+
                     done();
                 });
             },
 
             "restores the sandbox when the promise is rejected": function (done) {
-                var method = function () {};
-                var object = { method: method };
-                sinon.test(function (callback) {
+                var self = this;
+                var test = sinon.test(function () {
                     var sandbox = this;
-                    return Promise.resolve()
-                        .then(function () {
-                            sandbox.stub(object, "method");
-                        })
-                        .then(function () {
-                            return Promise.reject(new Error("dummy"));
-                        })
-                        .catch(callback);
-                }).call({}, function () {
-                    assert.equals(object.method, method);
+
+                    return new Promise(function (_, reject) {
+                        sandbox.stub(self.object, "method");
+
+                        reject();
+                    });
+                });
+
+                test.call({}).catch(function () {
+                    assert.equals(self.object.method, self.method);
+
+                    done();
+                });
+            },
+
+            "ensures test rejects with a non-falsy value": function (done) {
+                var self = this;
+                var test = sinon.test(function () {
+                    return Promise.reject(false);
+                });
+
+                test.call({}).catch(function (error) {
+                    assert.match(error.message, /rejected.*falsy/);
+                    assert.same(self.object.method, self.method);
+
                     done();
                 });
             },
 
             "re-throws the error if the promise is rejected": function (done) {
-                var spy = sinon.spy();
-                var error = new Error("dummy");
-                sinon.test(function (callback) {
-                    return Promise.reject(error)
-                        .catch(function (thrownError) {
-                            spy();
-                            callback(thrownError);
-                        });
-                }).call({}, function (thrownError) {
-                    assert.equals(spy.called, true);
-                    assert.equals(thrownError, error);
+                var expectedError = new Error("expected");
+                var test = sinon.test(function () {
+                    return Promise.reject(expectedError);
+                });
+
+                test.call({}).catch(function (error) {
+                    assert.equals(error, expectedError);
+
+                    done();
+                });
+            },
+
+            "verifies mocks when promise is resolved": function (done) {
+                var self = this;
+                var test = sinon.test(function () {
+                    var sandbox = this;
+
+                    return new Promise(function (resolve) {
+                        sandbox.mock(self.object).expects("method").withExactArgs(1).once();
+
+                        self.object.method(42);
+
+                        resolve();
+                    });
+                });
+
+
+                return test.call({}).catch(function (error) {
+                    assert.equals(error.name, "ExpectationError");
+                    assert.match(error.message, /Expected method\(1\) once/);
+
                     done();
                 });
             }
@@ -321,12 +475,11 @@
             var method = function () {};
             var object = { method: method };
 
-            try {
+            assert.exception(function () {
                 sinon.test(function () {
                     this.mock(object).expects("method");
                 }).call({});
-            }
-            catch (e) {} // eslint-disable-line no-empty
+            });
 
             assert.same(object.method, method);
         },
